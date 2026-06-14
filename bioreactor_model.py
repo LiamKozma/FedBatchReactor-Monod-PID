@@ -21,9 +21,16 @@ P0 = 0.0  # g/L
 mu_max = 1.2  # 1/hr
 Ks = 1  # g/L
 Yxs = 0.5
-Ypx = 15.05  # find the correct value later
+# ENGINEERED-STRAIN PLACEHOLDERS (see optimize_parameters_deap.py for full notes).
+# Hypothetical successfully metabolically-engineered E. coli; replace with measured data.
+#   Ypx : g enzyme per g biomass — strong overexpression (~30% of cell mass)
+#   Yps : g enzyme per g glucose — carbon-to-product efficiency
+#   Yax : g acetate per g biomass — reduced overflow metabolism (was 0.92; low value
+#         relieves acetate self-poisoning and enables high cell density)
+Ypx = 0.30  # ENGINEERED PLACEHOLDER (was 15.05, physically impossible)
+Yps = 0.25  # ENGINEERED PLACEHOLDER
 Yxo2 = 1.06  # g O2/g X, assumed yield coefficient for oxygen consumption
-Yax = 0.92  # g acetic acid/g X, assumed value, find the correct value later
+Yax = 0.05  # ENGINEERED PLACEHOLDER — low-acetate strain (was 0.92)
 O2_0 = .008
 A0 = 0.0  # g/L
 V0 = 79.21  # L
@@ -82,16 +89,22 @@ def monod_model(t, y, F, Sf):
     S, X, P, V, O2, A, U, T, int_error = y
 
 
-    mu = mu_max * S / (Ks + S) * (1 - A / Ki_acetic_acid) * (1 - S / Ki_glucose) * O2/(K_o2+O2) # Monod equation with inhibition terms ADD OXYGEN 
+    mu = mu_max * S / (Ks + S) * (1 - A / Ki_acetic_acid) * (1 - S / Ki_glucose) * O2/(K_o2+O2) # Monod equation with inhibition terms ADD OXYGEN
+    mu = max(mu, 0.0)  # growth cannot be negative; the linear inhibition terms can drive mu < 0 (unphysical)
     q_o2 = Yxo2 * mu  # Oxygen consumption rate
+    qp = Ypx * mu     # growth-associated specific product formation rate
 
-    # Mass balance equations
-    dSdt = -mu * X / Yxs + F * (Sf - S) / V
-    dXdt = mu * X - F * X / V
-    dPdt = mu * X * Ypx - F * P / V
-    dVdt = F * (1 - V / Vmax)
+    # Fed-batch volume balance: feed at rate F until the vessel is full, then stop.
+    # dV/dt = F keeps the volume ODE consistent with the F/V dilution terms below.
+    F_eff = F if V < Vmax else 0.0
+    dVdt = F_eff
+
+    # Mass balance equations (dilution rate = F_eff / V)
+    dSdt = -mu * X / Yxs - qp * X / Yps + F_eff * (Sf - S) / V  # substrate feeds both biomass and product (carbon balance)
+    dXdt = mu * X - F_eff * X / V
+    dPdt = qp * X - F_eff * P / V
     dO2dt = -q_o2 * X + kLa * (O2_sat - O2)
-    dAdt = mu * X * Yax - F * A / V
+    dAdt = mu * X * Yax - F_eff * A / V
 
     # PID controller for the heat exchanger area
     setpoint_temperature = 328.5
@@ -111,7 +124,7 @@ def monod_model(t, y, F, Sf):
     # Energy balance equation
     dUdt = -X * mu * heat_of_fermentation_ecoli \
        - heat_transfer_coefficient * current_reactor_area * (T - ambient_temperature) \
-       + F * rho * specific_heat_capacity * (T_feed - T) \
+       + F_eff * rho * specific_heat_capacity * (T_feed - T) \
        + agitation_power_per_volume * V
 
     # Temperature balance equation
